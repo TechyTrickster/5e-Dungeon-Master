@@ -4,16 +4,19 @@ from openai import OpenAI
 from functools import reduce
 
 
-class LMStudioSession:
-    def __init__(self, address, systemPrompt, port = 1234, timeout = 10, config = "", mode = "API"):
+class LMStudioSession: #maybe return a numeric message ID as a sendMessage identifier?  could be lighter weight and more reliable?
+    def __init__(self, address, systemPrompt, port = 1234, timeout = 60, config = "", mode = "API", existingChatHistory = ""):
         print("creating instance")
         self.address = None
         self.client = None
         self.operatingMode = mode
         self.systemPrompt = systemPrompt
-        self.messages = [self.generateSystemPromptLine(systemPrompt)]
+        self.messages = [self.generateSystemPromptLine(systemPrompt)] if existingChatHistory == "" else existingChatHistory
         self.messageHandle = "empty"
         self.messageQueue = []
+        self.sentID = 0
+        self.receivedID = 0
+        self.transactionID = 0
         self.timeout = timeout
         self.config = {}
         
@@ -50,9 +53,23 @@ class LMStudioSession:
     
     
     def clearMessageHistory(self):
-        self.messages = []
-        prompt = self.generateSystemPromptLine(self.systemPrompt)
-        self.messages.append(prompt)
+        if((not self.isWaitingForResponse()) and (not self.hasMessagesReady())):
+            self.messages = [self.generateSystemPromptLine(self.systemPrompt)]        
+            self.sentID = 0
+            self.receivedID = 0
+            self.transactionID = 0
+        else:
+            raise Exception("cannot clear message history while waiting for messages")
+
+    
+    def getChatHistory(self):
+        return(self.messages)
+    
+
+    def getFormattedChatHistory(self):
+        output = reduce(lambda x, y: x + "\n" + y['role'] + ":" + y['content'], self.messages, "")
+        output = output[1:]
+        return(output)
 
 
     def sendMessage(self, message): #
@@ -72,9 +89,7 @@ class LMStudioSession:
     
 
     def isWaitingForResponse(self): #
-        output = reduce(lambda x, y: x or (not y['handle'].done()), self.messageQueue, False)
-        print("is actually waiting? " + str(output))
-        
+        output = reduce(lambda x, y: x or (not y['handle'].done()), self.messageQueue, False)        
         return(output)
     
 
@@ -92,6 +107,15 @@ class LMStudioSession:
         output = len(self.messageQueue) > 0
         return(output)
     
+
+    async def receiveAllMessages(self):
+        output = []
+        while(self.isWaitingForResponse() or self.hasMessagesReady()):
+            buffer = self.receiveMessage()
+            output.append(buffer)
+        
+        return(output)
+
 
     async def receiveMessage(self): #in theory, based on the implementation of LM Studio, reponses should always be returned in the same order as messages are sent
         output = {}
