@@ -2,6 +2,7 @@ import requests
 import asyncio
 from openai import OpenAI
 from functools import reduce
+import graphviz
 
 
 class LMStudioSession: #maybe return a numeric message ID as a sendMessage identifier?  could be lighter weight and more reliable?
@@ -11,12 +12,13 @@ class LMStudioSession: #maybe return a numeric message ID as a sendMessage ident
         self.client = None
         self.operatingMode = mode
         self.systemPrompt = systemPrompt
-        self.messages = [self.generateSystemPromptLine(systemPrompt)] if existingChatHistory == "" else existingChatHistory
-        self.messageHandle = "empty"
-        self.messageQueue = []
         self.sentID = 0
         self.receivedID = 0
         self.transactionID = 0
+        self.eventID = 0
+        self.messages = [self.generateSystemPromptLine(systemPrompt)] if existingChatHistory == "" else existingChatHistory
+        self.messageHandle = "empty"
+        self.messageQueue = []        
         self.timeout = timeout
         self.config = {}
         
@@ -29,7 +31,7 @@ class LMStudioSession: #maybe return a numeric message ID as a sendMessage ident
                 "temperature": 0.7, 
                 "max_tokens": -1,
                 "stream": False,
-                "model": 'local mdoel'
+                "model": 'local model'
             }
 
         if(self.operatingMode == "API"):
@@ -48,7 +50,16 @@ class LMStudioSession: #maybe return a numeric message ID as a sendMessage ident
     
 
     def generateSystemPromptLine(self, prompt):
-        output = {"role": "system", "content": prompt}
+        output = {
+            "sent id": self.sentID,
+            "received id": -1,
+            "transaction id": self.transactionID,
+            "event id": self.eventID,
+            "role": "system",
+            "content": prompt,
+            "function call": '',
+            "tool calls": ''
+            }
         return(output)
     
     
@@ -67,7 +78,7 @@ class LMStudioSession: #maybe return a numeric message ID as a sendMessage ident
     
 
     def getFormattedChatHistory(self):
-        output = reduce(lambda x, y: x + "\n" + y['role'] + ":" + y['content'], self.messages, "")
+        output = reduce(lambda x, y: x + "\n\n" + y['role'] + " - " + str(y['event id']) +  + " : " + y['content'], self.messages, "")
         output = output[1:]
         return(output)
 
@@ -75,9 +86,22 @@ class LMStudioSession: #maybe return a numeric message ID as a sendMessage ident
     def sendMessage(self, message): #
         payload = {}
         payload.update(self.config)
-        taggedMessage = {"role": "user", "content": message}        
+        self.sentID = self.sentID + 1
+        self.transactionID = self.transactionID + 1
+        self.eventID = self.eventID + 1
+        taggedMessage = {
+            "sent id": self.sentID,
+            "received id": -1,
+            "transaction id": self.transactionID,
+            "event id": self.eventID,
+            "role": "user",
+            "content": message,
+            "function call": '',
+            "tool calls": ''
+            }
         payload['messages'] = self.messages.copy()
         payload['messages'].append(taggedMessage)
+
         print(payload)
         messageHandle = asyncio.create_task(self.sendMessageHelper(payload))
         buffer = {
@@ -119,24 +143,40 @@ class LMStudioSession: #maybe return a numeric message ID as a sendMessage ident
 
     async def receiveMessage(self): #in theory, based on the implementation of LM Studio, reponses should always be returned in the same order as messages are sent
         output = {}
+        print("receive attempt")
         if(self.isWaitingForResponse() or self.hasMessagesReady()):
             while(not self.hasMessagesReady()):
+                print("waiting")
                 await asyncio.sleep(0.2)
+                print("cycled")
             
+            print("done waiting")
             handle = ""            
             for (index, element) in enumerate(self.messageQueue):
                 handle = element
                 if(handle['handle'].done()):
                     self.messageQueue.pop(index)
                     break;
-
+                        
             self.messages.append(handle['input'])
             message = self.decodeMessageContent(handle)
+            message = self.receiveMessageHelper(message, handle)
             self.messages.append(message)
             output = (handle, message)
         else:
             output = "no output"
 
+        return(output)
+    
+    
+    def receiveMessageHelper(self, message, context):
+        output = message
+        self.eventID = self.eventID + 1
+        self.receivedID = self.receivedID + 1
+        output['sent id'] = -1
+        output['event id'] = self.eventID
+        output['transaction id'] = context['input']['transaction id']
+        output['receive id'] = self.receivedID        
         return(output)
     
 
@@ -165,6 +205,9 @@ class LMStudioSession: #maybe return a numeric message ID as a sendMessage ident
     def decodeMessageContentHelperAPI(self, handle):
         message = handle['handle'].result().choices[0].message
         output = {
+            'sent id': self.sentID,
+            'received id': -1,
+            'transaction id': self.transactionID,
             'role': message.role,
             'content': message.content,
             'function call': message.function_call,
